@@ -20,6 +20,7 @@
     // --- КОНФИГУРАЦИЯ И СОСТОЯНИЕ ---
     const STATE = {
         isDownloading: false,
+        saveOnStop: false, // Флаг для сохранения при остановке
         processedPostIds: new Set(),
         globalPidToNumMap: new Map(),
         totalDetectedPages: 1
@@ -27,7 +28,7 @@
 
     const BC = new BroadcastChannel('4pda_downloader_channel');
 
-    // Предкомпилированные регулярки для скорости
+    // Предкомпилированные регулярки
     const REGEX = {
         cleanImgs: /fix_linked_img_thumb\(.*\);/g,
         imgExt: /\.(jpg|jpeg|png|gif|webp|bmp)$/i,
@@ -42,7 +43,7 @@
         pagesCount: /(\d+)\s+страниц/
     };
 
-    // --- UI (ИНТЕРФЕЙС) ---
+    // --- UI ---
     const UI = {
         style: `
             #dl-panel { position: fixed; bottom: 60px; right: 20px; z-index: 9999; background: #f7f7f7; border: 1px solid #aaa; padding: 10px; border-radius: 4px; font-family: Arial, sans-serif; font-size: 12px; color: #333; box-shadow: 0 4px 15px rgba(0,0,0,0.2); width: 220px; display: none; }
@@ -50,13 +51,21 @@
             #dl-toggle-btn:hover { background: #356aa0; }
             .dl-row { margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
             .dl-input { width: 50px; padding: 2px; border: 1px solid #ccc; border-radius: 3px; text-align: center; }
+
             .dl-btn { width: 100%; padding: 6px; background: #699c3c; color: white; border: none; border-radius: 3px; cursor: pointer; font-weight: bold; margin-top: 5px; }
             .dl-btn:hover { background: #558030; }
-            .dl-btn.cancel { background: #af3228; margin-top: 5px; display: none;}
+
+            .dl-btn-group { display: flex; gap: 5px; margin-top: 5px; display: none; }
+            .dl-btn.save-stop { background: #e67e22; margin-top: 0; }
+            .dl-btn.save-stop:hover { background: #d35400; }
+            .dl-btn.cancel { background: #af3228; margin-top: 0; }
+            .dl-btn.cancel:hover { background: #8e1c1c; }
+
             #dl-status { margin-top: 8px; text-align: center; font-style: italic; color: #555; }
             .dl-checkbox-wrapper { display: flex; align-items: center; background: #e0e0e0; padding: 3px 6px; border-radius: 4px; width: 100%; box-sizing: border-box; justify-content: space-between; margin-bottom: 4px;}
             .dl-checkbox { cursor: pointer; margin: 0; }
             .dl-broadcast-label { color: #d32f2f; font-weight: bold; }
+
             .night #dl-panel { background: #22272B; border-color: #395179; color: #9e9e9e; }
             .night .dl-input { background: #31383e; border-color: #395179; color: #ddd; }
             .night .dl-checkbox-wrapper { background: #31383e; }
@@ -79,17 +88,35 @@
             panel.innerHTML = `
                 <div class="dl-row"><label>С стр:</label><input type="number" id="dl-start" class="dl-input" value="1" min="1"></div>
                 <div class="dl-row"><label>По стр:</label><input type="number" id="dl-end" class="dl-input" value="1" min="1"></div>
-                <div class="dl-row"><label title="Задержка менее 1с может повлечь за собой бан">Задержка, мс:</label><input type="number" id="dl-delay" class="dl-input" value="1000" step="100" min="500"></div>
+
+                <div class="dl-row" title="Одновременных запросов"><label>Потоков:</label><input type="number" id="dl-threads" class="dl-input" value="3" min="1" max="10"></div>
+                <div class="dl-row" title="Задержка менее 1с может повлечь за собой бан"><label>Задержка, мс:</label><input type="number" id="dl-delay" class="dl-input" value="2000" step="100" min="500"></div>
+
                 <div class="dl-checkbox-wrapper" title="Сжатый лог"><label for="dl-ai-mode" style="font-weight:bold; color:#468ccf;">Для ИИ</label><input type="checkbox" id="dl-ai-mode" class="dl-checkbox"></div>
                 <div class="dl-checkbox-wrapper" title="Скачивание всех открытых вкладок, настройки синхронизируются"><label for="dl-broadcast" class="dl-broadcast-label">Скачать все вкладки</label><input type="checkbox" id="dl-broadcast" class="dl-checkbox"></div>
+
                 <button id="dl-go-btn" class="dl-btn">СКАЧАТЬ</button>
-                <button id="dl-stop-btn" class="dl-btn cancel">СТОП</button>
+
+                <div id="dl-controls" class="dl-btn-group">
+                    <button id="dl-save-stop-btn" class="dl-btn save-stop">СТОП+СОХР</button>
+                    <button id="dl-cancel-btn" class="dl-btn cancel">ОТМЕНА</button>
+                </div>
+
                 <div id="dl-status">Ожидание...</div>
             `;
             document.body.appendChild(panel);
 
             document.getElementById('dl-go-btn').onclick = () => Engine.handleStartClick(false);
-            document.getElementById('dl-stop-btn').onclick = () => { STATE.isDownloading = false; };
+
+            // Обработчики кнопок остановки
+            document.getElementById('dl-save-stop-btn').onclick = () => {
+                STATE.saveOnStop = true;
+                STATE.isDownloading = false;
+            };
+            document.getElementById('dl-cancel-btn').onclick = () => {
+                STATE.saveOnStop = false;
+                STATE.isDownloading = false;
+            };
 
             this.detectPages();
             const endInput = document.getElementById('dl-end');
@@ -127,20 +154,24 @@
 
         setControlsState(downloading) {
             document.getElementById('dl-go-btn').style.display = downloading ? 'none' : 'block';
-            document.getElementById('dl-stop-btn').style.display = downloading ? 'block' : 'none';
+            document.getElementById('dl-controls').style.display = downloading ? 'flex' : 'none';
         }
     };
 
-    // --- DOM PARSER & CLEANER ---
+    // --- PARSER ---
     const Parser = {
         domParser: new DOMParser(),
 
         parseHtml(htmlString, pageNum, isAiMode) {
             const doc = this.domParser.parseFromString(htmlString, "text/html");
             const postsElements = doc.querySelectorAll('table.ipbtable[data-post]');
-            if (postsElements.length === 0) return null;
 
-            // 1. Индексация ID -> Номер
+            if (postsElements.length === 0) {
+                const err = doc.querySelector('.errorwrap, .globalmesswarnwrap');
+                if (err) return `\n!!! ОШИБКА СТР ${pageNum}: ${err.innerText.trim()} !!!\n`;
+                return `\n!!! ПУСТАЯ СТРАНИЦА ${pageNum} !!!\n`;
+            }
+
             postsElements.forEach(post => {
                 const pid = post.getAttribute('data-post');
                 const numEl = post.querySelector('div[style="float:right"] a[onclick^="link_to_post"]');
@@ -149,7 +180,6 @@
 
             let pageResult = [];
 
-            // 2. Обработка
             postsElements.forEach(post => {
                 const pid = post.getAttribute('data-post');
                 if (STATE.processedPostIds.has(pid)) return;
@@ -196,23 +226,17 @@
         },
 
         cleanNode(node, isAiMode) {
-            // Удаляем технический мусор
             node.querySelectorAll('script, .edit, .post-edit-reason').forEach(el => el.remove());
 
-            // --- AI MODE SPECIFIC ---
             if (isAiMode) {
-                // Картинки -> [IMG]
                 node.querySelectorAll('img').forEach(img => img.replaceWith(document.createTextNode('[IMG]')));
                 node.querySelectorAll('a').forEach(a => {
                     if (REGEX.imgExt.test(a.href)) a.replaceWith(document.createTextNode('[IMG]'));
                 });
 
-                // Цитаты -> Ссылка >#ID
                 node.querySelectorAll('.post-block.quote').forEach(quote => {
                     const title = quote.querySelector('.block-title');
                     let ref = ">Цитата";
-
-                    // Попытка найти ID в заголовке цитаты
                     if (title) {
                         const link = title.querySelector('a[title="Перейти к сообщению"]');
                         if (link) {
@@ -222,7 +246,6 @@
                                 ref = num ? `>${num}` : `>#${match[1]}`;
                             }
                         }
-                        // Если нет ID, ищем Ник
                         if (ref === ">Цитата") {
                             const nick = title.innerText.split('@')[0].trim();
                             if (nick) ref = `>${nick}`;
@@ -231,13 +254,10 @@
                     quote.replaceWith(document.createTextNode(` ${ref} `));
                 });
             } else {
-                // --- STANDARD MODE SPECIFIC ---
                 node.querySelectorAll('.post-block.quote').forEach(quote => {
                     const title = quote.querySelector('.block-title');
                     const body = quote.querySelector('.block-body');
-
                     if (title) {
-                        // Обработка ссылки в заголовке
                         const link = title.querySelector('a[title="Перейти к сообщению"]');
                         if(link) {
                             const match = link.href.match(REGEX.pidFromLink);
@@ -249,7 +269,6 @@
                         title.append(document.createTextNode('\n'));
                     }
                     if (body) {
-                        // Удаляем висячие BR в конце цитаты
                         let last = body.lastChild;
                         while(last && (last.tagName === 'BR' || (last.nodeType === 3 && !last.textContent.trim()))) {
                             const prev = last.previousSibling; last.remove(); last = prev;
@@ -261,7 +280,6 @@
                 });
             }
 
-            // --- ОБЩЕЕ: Ответы (Snapback) ---
             node.querySelectorAll('a[title="Перейти к сообщению"]').forEach(link => {
                 const match = link.href.match(REGEX.pidFromLink);
                 if (match) {
@@ -270,18 +288,14 @@
                         ? (num ? `>${num} ` : `>#${match[1]} `)
                         : (num ? `>> ${num} ` : `>> #${match[1]} `);
 
-                    // Чистка дублей ников в AI режиме
                     if (isAiMode) {
                         let next = link.nextSibling;
-                        // Пропуск пробелов
                         while (next && next.nodeType === 3 && !next.textContent.trim()) {
                             let rm = next; next = next.nextSibling; rm.remove();
                         }
-                        // Удаление жирного ника <b>Nick</b>
                         if (next && next.tagName === 'B') {
                             let rm = next; next = next.nextSibling; rm.remove();
                         }
-                        // Удаление запятой/пробела в начале след. текста
                         if (next && next.nodeType === 3) {
                             next.textContent = next.textContent.replace(/^[\s,]+/, '');
                         }
@@ -290,7 +304,6 @@
                 } else link.remove();
             });
 
-            // --- ОБЩЕЕ: Ссылки ---
             node.querySelectorAll('a').forEach(link => {
                 const href = link.href;
                 const text = link.innerText.trim();
@@ -314,20 +327,16 @@
                 }
             });
 
-            // Списки и заголовки
             const listSep = isAiMode ? '; ' : '\n';
             node.querySelectorAll('li, .block-title').forEach(el => el.append(document.createTextNode(listSep)));
 
-            // BR
             const brRep = isAiMode ? ' ' : '\n';
             node.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode(brRep)));
         },
 
         cleanText(text, isAiMode) {
             text = text.replace(REGEX.resolutionInfo, '').replace(REGEX.sizeInfo, '').replace(REGEX.cleanImgs, '');
-
             if (isAiMode) {
-                // Схлопывание пробелов и ;
                 return text.replace(REGEX.multiSpaces, ' ').replace(REGEX.multiSemi, '; ').trim();
             } else {
                 return text.replace(REGEX.multiNewlines, '\n\n');
@@ -335,13 +344,12 @@
         }
     };
 
-    // --- ОСНОВНАЯ ЛОГИКА ---
+    // --- ENGINE ---
     const Engine = {
-        async run(start, end, delay, isAiMode) {
+        async run(start, end, delay, threads, isAiMode) {
             if (STATE.isDownloading) return;
 
             const baseUrlMatch = window.location.href.split(/[?&]st=/)[0];
-            // Базовая проверка
             if (baseUrlMatch.includes('?') && !baseUrlMatch.includes('showtopic=')) {
                 alert('Скрипт работает только в теме!');
                 return;
@@ -349,43 +357,74 @@
             const baseUrl = baseUrlMatch.split('#')[0];
 
             STATE.isDownloading = true;
+            STATE.saveOnStop = false; // Сброс флага сохранения
             UI.setControlsState(true);
             STATE.processedPostIds.clear();
             STATE.globalPidToNumMap.clear();
 
-            let dataChunks = []; // Используем массив вместо строки для производительности
+            let pagesContent = new Array(end - start + 1);
 
-            const current = Math.min(start, end);
-            const last = Math.max(start, end);
-
-            for (let i = current; i <= last; i++) {
+            for (let i = start; i <= end; i += threads) {
+                // ПРОВЕРКА НА ОСТАНОВКУ
                 if (!STATE.isDownloading) {
-                    UI.setStatus("Отменено");
+                    UI.setStatus("Остановка...");
                     break;
                 }
 
-                UI.setStatus(`Скачивание: ${i} / ${last}`);
-                const offset = (i - 1) * 20;
-                const sep = baseUrl.includes('?') ? '&' : '?';
-                const url = `${baseUrl}${sep}st=${offset}`;
+                const batchPromises = [];
+                const batchIndices = [];
 
-                try {
-                    const html = await this.fetchPage(url);
-                    const parsedText = Parser.parseHtml(html, i, isAiMode);
-                    if (parsedText) dataChunks.push(parsedText);
-                    else dataChunks.push(`\n[ОШИБКА/ПУСТО СТР. ${i}]\n`);
-                } catch (e) {
-                    console.error(e);
-                    dataChunks.push(`\n[СБОЙ ЗАГРУЗКИ СТР. ${i}]\n`);
+                for (let t = 0; t < threads; t++) {
+                    const pageNum = i + t;
+                    if (pageNum > end) break;
+
+                    batchIndices.push(pageNum);
+
+                    const offset = (pageNum - 1) * 20;
+                    const sep = baseUrl.includes('?') ? '&' : '?';
+                    const url = `${baseUrl}${sep}st=${offset}`;
+
+                    batchPromises.push(this.fetchPage(url).catch(err => {
+                        console.error(`Err page ${pageNum}`, err);
+                        return null;
+                    }));
                 }
 
-                if (i < last) await new Promise(r => setTimeout(r, delay));
+                UI.setStatus(`Группа: ${batchIndices[0]}-${batchIndices[batchIndices.length-1]} / ${end}`);
+
+                const results = await Promise.all(batchPromises);
+
+                results.forEach((html, index) => {
+                    const pageNum = batchIndices[index];
+                    const arrayIndex = pageNum - start;
+
+                    if (html) {
+                        const parsed = Parser.parseHtml(html, pageNum, isAiMode);
+                        pagesContent[arrayIndex] = parsed;
+                    } else {
+                        pagesContent[arrayIndex] = `\n[ОШИБКА ЗАГРУЗКИ СТР. ${pageNum}]\n`;
+                    }
+                });
+
+                if (i + threads <= end) {
+                    await new Promise(r => setTimeout(r, delay));
+                }
             }
 
-            if (STATE.isDownloading) {
-                UI.setStatus("Сохранение...");
-                this.saveFile(dataChunks.join(''), isAiMode);
-                UI.setStatus("Готово!");
+            // ЛОГИКА ЗАВЕРШЕНИЯ
+            if (STATE.isDownloading || STATE.saveOnStop) {
+                UI.setStatus("Сборка файла...");
+                // Фильтруем пустые элементы, если остановили на середине
+                const finalString = pagesContent.filter(el => el !== undefined).join('');
+
+                if (finalString.length > 0) {
+                    this.saveFile(finalString, isAiMode);
+                    UI.setStatus("Готово!");
+                } else {
+                    UI.setStatus("Ничего не скачано.");
+                }
+            } else {
+                UI.setStatus("Отменено.");
             }
 
             STATE.isDownloading = false;
@@ -419,33 +458,30 @@
         handleStartClick(isRemote) {
             const start = parseInt(document.getElementById('dl-start').value) || 1;
             const end = parseInt(document.getElementById('dl-end').value) || 99999;
+            const threads = parseInt(document.getElementById('dl-threads').value) || 3;
             const delay = parseInt(document.getElementById('dl-delay').value) || 2000;
             const aiMode = document.getElementById('dl-ai-mode').checked;
             const broadcast = document.getElementById('dl-broadcast').checked;
 
             if (!isRemote && broadcast) {
-                BC.postMessage({ type: 'START', start, end, delay, aiMode });
+                BC.postMessage({ type: 'START', start, end, delay, threads, aiMode });
             }
 
             const localEnd = Math.min(end, STATE.totalDetectedPages);
-            this.run(start, localEnd, delay, aiMode);
+            this.run(start, localEnd, delay, threads, aiMode);
         }
     };
 
-    // --- BROADCAST LISTENER ---
     BC.onmessage = (ev) => {
         if (ev.data.type === 'START' && !STATE.isDownloading) {
-            const { start, end, delay, aiMode } = ev.data;
+            const { start, end, delay, threads, aiMode } = ev.data;
             document.getElementById('dl-start').value = start;
-            // Ограничиваем локальным максимумом
-            const localEnd = Math.min(end, STATE.totalDetectedPages);
-            document.getElementById('dl-end').value = localEnd;
+            document.getElementById('dl-end').value = Math.min(end, STATE.totalDetectedPages);
             document.getElementById('dl-delay').value = delay;
+            document.getElementById('dl-threads').value = threads;
             document.getElementById('dl-ai-mode').checked = aiMode;
 
             document.getElementById('dl-panel').style.display = 'block';
-
-            // Рандомная задержка старта 0-2с
             setTimeout(() => Engine.handleStartClick(true), Math.random() * 2000);
         }
     };

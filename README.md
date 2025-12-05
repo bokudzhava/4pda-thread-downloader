@@ -1,7 +1,3 @@
-Вот обновленный `README.md`, отражающий все последние изменения (компактный интерфейс, режим для ИИ, фильтрация изображений и ссылок, исправление дублей).
-
-***
-
 # 4PDA Thread Downloader
 
 Пользовательский скрипт для [Tampermonkey](https://www.tampermonkey.net/), предназначенный для скачивания веток форума **4PDA** в текстовый файл (`.txt`).
@@ -34,7 +30,7 @@
 ## Установка
 
 1.  Установите расширение **[Tampermonkey](https://www.tampermonkey.net/)** для вашего браузера.
-2.  Скачайте и установите скрипт: **[Установить скрипт]([4pda-thread-downloader.user.js](https://github.com/bokudzhava/4pda-thread-downloader/raw/refs/heads/main/4pda-thread-downloader-1.1.user.js))**
+2.  Скачайте и установите скрипт: **[Установить скрипт](https://github.com/bokudzhava/4pda-thread-downloader/raw/refs/heads/main/4pda-thread-downloader-1.1.user.js)**
 
 ## Использование
 

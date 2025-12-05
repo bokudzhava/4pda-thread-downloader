@@ -20,7 +20,7 @@
 ## Установка
 
 Требования: [Tampermonkey](https://www.tampermonkey.net/) (расширение для браузера)  
-Установка: [4pda-thread-downloader.user.js](https://github.com/bokudzhava/4pda-thread-downloader/raw/refs/heads/main/4pda-thread-downloader-1.0.user.js)
+Установка: [4pda-thread-downloader.user.js](https://github.com/bokudzhava/4pda-thread-downloader/raw/refs/heads/main/4pda-thread-downloader-1.1.user.js)
 
 ## Использование
 
